@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-fs-server"
+version = "0.1.0"
+description = "A Python 3.7+ file server with directory listing, range download, and resumable upload."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.7"
+authors = [
+  { name = "web-fs-server contributors" }
+]
+keywords = ["http", "server", "upload", "resume", "range", "fileserver"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+  "Topic :: System :: Filesystems",
+]
+dependencies = []
+
+[project.scripts]
+web-fs-server = "web_fs_server.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
