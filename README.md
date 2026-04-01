@@ -1,115 +1,133 @@
 # web-fs-server
 
-`web-fs-server` 是一个可替代 `python -m http.server` 的文件服务工具，支持：
+`web-fs-server` is a practical replacement for `python -m http.server`.
 
-- 目录浏览（Web UI 风格接近 `http.server`）
-- 断点下载（HTTP `Range` / `206 Partial Content`）
-- Web 上传按钮 + 分片上传
-- 同名文件上传前检测
-- 覆盖上传或断点续传（二选一）
-- `.upload` 元数据文件（记录文件总大小、已上传分片范围）
+Chinese documentation: [README.zh-CN.md](./README.zh-CN.md)
 
-兼容 Python 版本：`3.7` 到 `3.13`（以及后续 3.x 版本）。
+## Features
 
-## 安装
+- Directory listing Web UI
+- Resume download via HTTP range (`206 Partial Content`)
+- Web upload button with chunked upload
+- Same-name conflict check before upload
+- Overwrite or resume upload flow
+- `.upload` metadata for upload progress
+- Auto-remove `.upload` after upload completion
+- File and folder delete button in UI
+
+Python compatibility: `3.7` to `3.13` (and newer 3.x).
+
+## Install
 
 ```bash
 pip install web-fs-server
 ```
 
-或本地开发安装：
+For local development:
 
 ```bash
 pip install -e .
 ```
 
-## 使用
+## Run
 
-默认当前目录、端口 `8000`：
+Default (current directory, port 8000):
 
 ```bash
 web-fs-server
 ```
 
-指定目录和端口：
+Tip (recommended quick run):
+
+```bash
+uvx web-fs-server
+```
+
+Custom port and directory:
 
 ```bash
 web-fs-server 9000 -d /data/files
 ```
 
-仅本机访问：
+Bind local only:
 
 ```bash
 web-fs-server -b 127.0.0.1
 ```
 
-关闭上传功能（只保留浏览 + 下载）：
+Disable upload:
 
 ```bash
 web-fs-server --no-upload
 ```
 
-调整上传分片大小（默认 4MB）：
+Set upload chunk size (default 4MB):
 
 ```bash
 web-fs-server --chunk-size 1048576
 ```
 
-## 续传行为说明
+## Resumable Upload
 
-上传文件 `a.zip` 时，服务端会创建：
+When uploading `a.zip`, server creates:
 
-- `a.zip`（目标文件，按总大小预分配）
-- `a.zip.upload`（JSON 元数据）
+- `a.zip` (target file)
+- `a.zip.upload` (JSON metadata)
 
-`.upload` 中包含：
+Metadata fields:
 
-- `file_size`: 目标文件总大小
-- `uploaded_ranges`: 已上传分片区间（`[start, end)`）
-- `bytes_received`: 已覆盖字节数
-- `completed`: 是否完整上传
+- `file_size`
+- `uploaded_ranges` (`[start, end)`)
+- `bytes_received`
+- `completed`
 
-上传完成后，`a.zip.upload` 会被自动删除，不会长期保留。
+When uploading same filename again:
 
-当再次上传同名文件时：
+1. Check existing file and `.upload`
+2. Resume if state is valid
+3. Otherwise overwrite
+4. Remove `.upload` after completion
 
-1. 先检测同名文件和 `.upload`
-2. 若满足续传条件（`file_size` 一致且目标文件大小一致），可选择“续传”
-3. 若不满足续传条件，会提示“覆盖或取消”
-4. 续传校验采用简单大小一致性判断，避免误把被改动文件当作可续传目标
+## API Endpoints
 
-## HTTP 接口（供前端页面调用）
+- `POST /.upload/check`
+- `POST /.upload/init`
+- `POST /.upload/chunk`
+- `POST /.upload/delete`
+- `DELETE /.upload/delete`
 
-- `POST /.upload/check`：检查同名与可续传状态
-- `POST /.upload/init`：初始化上传会话（`overwrite` / `resume`）
-- `POST /.upload/chunk`：上传单个分片
+## Build & Publish (PyPI)
 
-## 发布到 PyPI
-
-先安装构建工具：
-
-```bash
-python -m pip install --upgrade build twine
-```
-
-构建：
+Install publish tools:
 
 ```bash
-python -m build
+uv pip install -U twine
 ```
 
-上传（正式仓库）：
+Build package:
 
 ```bash
-twine upload dist/*
+uv build
 ```
 
-上传（测试仓库）：
+Check package files:
 
 ```bash
-twine upload --repository testpypi dist/*
+uvx twine check dist/*.whl dist/*.tar.gz
 ```
 
-## 许可证
+Upload to PyPI:
+
+```bash
+uvx twine upload dist/*.whl dist/*.tar.gz
+```
+
+Upload to TestPyPI:
+
+```bash
+uvx twine upload --repository testpypi dist/*.whl dist/*.tar.gz
+```
+
+## License
 
 MIT
