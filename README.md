@@ -2,14 +2,13 @@
 
 `web-fs-server` is a practical replacement for `python -m http.server`.
 
-Chinese documentation: [README.zh-CN.md](./README.zh-CN.md)
-
 ## Features
 
 - Directory listing Web UI
 - Resume download via HTTP range (`206 Partial Content`)
 - Web upload button with chunked upload
 - Same-name conflict check before upload
+- Conflict options: overwrite / rename / cancel
 - Overwrite or resume upload flow
 - `.upload` metadata for upload progress
 - Auto-remove `.upload` after upload completion
@@ -90,43 +89,12 @@ When uploading same filename again:
 
 ## API Endpoints
 
+- `GET /.api/list?directory=/path/`
 - `POST /.upload/check`
 - `POST /.upload/init`
 - `POST /.upload/chunk`
 - `POST /.upload/delete`
 - `DELETE /.upload/delete`
-
-## Build & Publish (PyPI)
-
-Install publish tools:
-
-```bash
-uv pip install -U twine
-```
-
-Build package:
-
-```bash
-uv build
-```
-
-Check package files:
-
-```bash
-uvx twine check dist/*.whl dist/*.tar.gz
-```
-
-Upload to PyPI:
-
-```bash
-uvx twine upload dist/*.whl dist/*.tar.gz
-```
-
-Upload to TestPyPI:
-
-```bash
-uvx twine upload --repository testpypi dist/*.whl dist/*.tar.gz
-```
 
 ## License
 

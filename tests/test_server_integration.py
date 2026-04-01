@@ -50,6 +50,14 @@ class ServerIntegrationTests(unittest.TestCase):
         conn.close()
         return resp.status, json.loads(data.decode("utf-8"))
 
+    def _get_json(self, path: str):
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        return resp.status, json.loads(data.decode("utf-8"))
+
     def test_upload_resume_and_range_download(self) -> None:
         status_code, check = self._post_json(
             "/.upload/check",
@@ -127,6 +135,87 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertIn("Deleted file", payload["message"])
         self.assertFalse(target_file.exists())
+
+    def test_list_entries_api_root(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "folder").mkdir()
+        (base / "folder" / "child.txt").write_text("child", encoding="utf-8")
+        (base / "root.txt").write_text("hello", encoding="utf-8")
+        (base / "hidden.upload").write_text("meta", encoding="utf-8")
+
+        status_code, payload = self._get_json("/.api/list?directory=/")
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["path"], "/")
+
+        names = [item["name"] for item in payload["entries"]]
+        self.assertIn("folder", names)
+        self.assertIn("root.txt", names)
+        self.assertNotIn("hidden.upload", names)
+
+        folder_item = next(item for item in payload["entries"] if item["name"] == "folder")
+        self.assertEqual(folder_item["display_name"], "folder/")
+        self.assertEqual(folder_item["href"], "folder/")
+        self.assertTrue(folder_item["can_delete"])
+        self.assertFalse(folder_item["is_parent"])
+
+    def test_list_entries_api_subdirectory_has_parent_entry(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "sub").mkdir()
+        (base / "sub" / "nested.txt").write_text("x", encoding="utf-8")
+
+        status_code, payload = self._get_json("/.api/list?directory=/sub/")
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["path"], "/sub/")
+        self.assertGreaterEqual(len(payload["entries"]), 1)
+
+        parent_item = payload["entries"][0]
+        self.assertTrue(parent_item["is_parent"])
+        self.assertEqual(parent_item["href"], "../")
+        self.assertFalse(parent_item["can_delete"])
+
+    def test_list_entries_api_invalid_directory(self) -> None:
+        status_code, payload = self._get_json("/.api/list?directory=/missing")
+        self.assertEqual(status_code, 400)
+        self.assertIn("invalid directory", payload["message"])
+
+    def test_upload_check_returns_rename_suggestion_for_plain_name(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "movie.mp4").write_text("x", encoding="utf-8")
+
+        status_code, payload = self._post_json(
+            "/.upload/check",
+            {"filename": "movie.mp4", "file_size": 1, "directory": "/"},
+        )
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["exists"])
+        self.assertEqual(payload["rename_suggestion"], "movie (1).mp4")
+
+    def test_upload_check_rename_suggestion_uses_largest_suffix(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "movie.mp4").write_text("x", encoding="utf-8")
+        (base / "movie (2).mp4").write_text("x", encoding="utf-8")
+
+        status_code, payload = self._post_json(
+            "/.upload/check",
+            {"filename": "movie.mp4", "file_size": 1, "directory": "/"},
+        )
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["exists"])
+        self.assertEqual(payload["rename_suggestion"], "movie (3).mp4")
+
+    def test_upload_check_rename_suggestion_increments_suffix(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "movie (1).mp4").write_text("x", encoding="utf-8")
+        (base / "movie (2).mp4").write_text("x", encoding="utf-8")
+        (base / "movie (3).mp4.upload").write_text("meta", encoding="utf-8")
+
+        status_code, payload = self._post_json(
+            "/.upload/check",
+            {"filename": "movie (1).mp4", "file_size": 1, "directory": "/"},
+        )
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["exists"])
+        self.assertEqual(payload["rename_suggestion"], "movie (4).mp4")
 
 
 if __name__ == "__main__":

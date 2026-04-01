@@ -8,6 +8,7 @@
 - 断点下载（HTTP `Range` / `206`）
 - 上传按钮 + 分片上传
 - 上传前同名冲突检测
+- 同名冲突支持：覆盖 / 重命名 / 取消
 - 支持覆盖上传/断点续传
 - 用 `.upload` 元数据记录上传进度
 - 上传完成自动删除 `.upload`
@@ -88,43 +89,12 @@ web-fs-server --chunk-size 1048576
 
 ## API 接口
 
+- `GET /.api/list?directory=/path/`
 - `POST /.upload/check`
 - `POST /.upload/init`
 - `POST /.upload/chunk`
 - `POST /.upload/delete`
 - `DELETE /.upload/delete`
-
-## 构建与发布（PyPI）
-
-安装发布工具：
-
-```bash
-uv pip install -U twine
-```
-
-构建：
-
-```bash
-uv build
-```
-
-检查包：
-
-```bash
-uvx twine check dist/*.whl dist/*.tar.gz
-```
-
-上传到 PyPI：
-
-```bash
-uvx twine upload dist/*.whl dist/*.tar.gz
-```
-
-上传到 TestPyPI：
-
-```bash
-uvx twine upload --repository testpypi dist/*.whl dist/*.tar.gz
-```
 
 ## 许可证
 

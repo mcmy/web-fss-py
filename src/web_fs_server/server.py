@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -25,11 +26,13 @@ from .ranges import (
     _parse_single_range_header,
     _range_is_covered,
 )
+from .html_pages import render_directory_page, render_upload_panel
 from .startup_urls import _build_startup_urls
 
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
 MAX_JSON_BODY = 1024 * 1024
 READ_BUFFER_SIZE = 64 * 1024
+LIST_API_PATHS = ("/.api/list", "/.api/list/")
 
 
 def _utc_now_iso() -> str:
@@ -84,6 +87,9 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         try:
+            if parsed.path in LIST_API_PATHS:
+                self._handle_list_entries(parsed.query)
+                return
             if parsed.path.startswith("/.upload/"):
                 if not getattr(self.server, "enable_upload", False):
                     self._send_json(
@@ -104,6 +110,16 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 return
             self._serve_path(head_only=False)
         except Exception as exc:
+            if parsed.path in LIST_API_PATHS:
+                self._send_json(
+                    {
+                        "message": self._format_exception_message(
+                            "List request failed", exc
+                        )
+                    },
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
             if parsed.path.startswith("/.upload/"):
                 self._send_json(
                     {
@@ -267,25 +283,80 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
+
     def _send_directory_listing(self, local_dir: Path, request_path: str, head_only: bool) -> None:
+        # Keep behavior consistent with previous implementation: reject unreadable directories.
         try:
-            entries = sorted(local_dir.iterdir(), key=lambda p: p.name.lower())
+            iterator = local_dir.iterdir()
+            next(iterator, None)
         except OSError:
             self.send_error(HTTPStatus.NOT_FOUND, "No permission to list directory")
             return
 
         title = "File Browser"
-        rows: List[str] = []
+        upload_panel = ""
+        if getattr(self.server, "enable_upload", False):
+            upload_panel = self._upload_panel_html(request_path)
+
+        page = render_directory_page(title=title, request_path=request_path, upload_panel=upload_panel)
+        payload = page.encode("utf-8", "surrogateescape")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+
+        if not head_only:
+            self.wfile.write(payload)
+
+    def _handle_list_entries(self, query: str) -> None:
+        params = parse_qs(query)
+        directory = self._first_query_value(params, "directory")
+        if directory is None:
+            directory = self._first_query_value(params, "path")
+        if directory is None:
+            directory = "/"
+
+        try:
+            target_dir = self._resolve_upload_directory(directory)
+        except (PermissionError, FileNotFoundError, NotADirectoryError):
+            self._send_json({"message": "invalid directory"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        request_path = self._request_path_for_local_dir(target_dir)
+        try:
+            entries = self._build_directory_entries(target_dir, request_path)
+        except OSError:
+            self._send_json(
+                {"message": "No permission to list directory"},
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+
+        self._send_json(
+            {
+                "path": request_path,
+                "item_count": len(entries),
+                "entries": entries,
+            },
+            HTTPStatus.OK,
+        )
+
+    def _build_directory_entries(self, local_dir: Path, request_path: str) -> List[Dict[str, Any]]:
+        entries = sorted(local_dir.iterdir(), key=lambda p: p.name.lower())
+        out: List[Dict[str, Any]] = []
         can_manage = getattr(self.server, "enable_upload", False)
 
         if request_path != "/":
-            rows.append(
-                '<tr>'
-                '<td class="name-col"><a class="item-link" href="../">../ (Parent Directory)</a></td>'
-                '<td class="size-col">-</td>'
-                '<td class="time-col">-</td>'
-                '<td class="action-col">-</td>'
-                "</tr>"
+            out.append(
+                {
+                    "name": "..",
+                    "display_name": "../ (Parent Directory)",
+                    "href": "../",
+                    "size": "-",
+                    "modified": "-",
+                    "is_parent": True,
+                    "can_delete": False,
+                }
             )
 
         for entry in entries:
@@ -296,758 +367,69 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
             display_name = name
             link_name = quote(name)
             size_text = "-"
+
             try:
                 stat_info = entry.stat()
-                mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
             except OSError:
                 stat_info = None
                 mtime = "-"
 
-            if entry.is_dir():
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                is_dir = False
+
+            try:
+                is_symlink = entry.is_symlink()
+            except OSError:
+                is_symlink = False
+
+            try:
+                is_file = entry.is_file()
+            except OSError:
+                is_file = False
+
+            if is_dir:
                 display_name += "/"
                 link_name += "/"
-            elif entry.is_symlink():
+            elif is_symlink:
                 display_name += "@"
-            if stat_info and entry.is_file():
+
+            if stat_info and is_file:
                 size_text = self._human_size(stat_info.st_size)
 
-            action_html = "-"
-            if can_manage:
-                action_html = (
-                    '<button class="btn btn-danger btn-small delete-btn" type="button" data-delete-name="%s">Delete</button>'
-                    % html.escape(name, quote=True)
-                )
-
-            rows.append(
-                "<tr>"
-                "<td class=\"name-col\"><a class=\"item-link\" href=\"%s\">%s</a></td>"
-                "<td class=\"size-col\">%s</td>"
-                "<td class=\"time-col\">%s</td>"
-                "<td class=\"action-col\">%s</td>"
-                "</tr>"
-                % (
-                    html.escape(link_name, quote=True),
-                    html.escape(display_name),
-                    html.escape(size_text),
-                    html.escape(mtime),
-                    action_html,
-                )
+            out.append(
+                {
+                    "name": name,
+                    "display_name": display_name,
+                    "href": link_name,
+                    "size": size_text,
+                    "modified": mtime,
+                    "is_parent": False,
+                    "can_delete": can_manage,
+                }
             )
 
-        upload_panel = ""
-        if getattr(self.server, "enable_upload", False):
-            upload_panel = self._upload_panel_html(request_path)
+        return out
 
-        page = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{title}</title>
-<style>
-:root {{
-  --bg-top: #f7fafc;
-  --bg-bottom: #eef3f8;
-  --card-bg: #ffffff;
-  --card-border: #d8e2ee;
-  --text-main: #1a2433;
-  --text-muted: #617185;
-  --primary: #2f6fed;
-  --primary-strong: #2458c4;
-  --accent-soft: #e9f0ff;
-  --danger: #c12f3a;
-  --line: #e4ebf3;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  margin: 0;
-  min-height: 100vh;
-  color: var(--text-main);
-  font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", sans-serif;
-  background: linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
-}}
-.app-shell {{
-  width: min(1040px, calc(100vw - 32px));
-  margin: 20px auto 28px;
-}}
-.app-header {{
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: 14px;
-  padding: 18px 20px;
-  box-shadow: 0 8px 24px rgba(20, 48, 90, 0.06);
-}}
-.app-header h1 {{
-  margin: 0;
-  font-size: 26px;
-  letter-spacing: 0.2px;
-}}
-.path-note {{
-  margin: 8px 0 0;
-  color: var(--text-muted);
-  font-size: 14px;
-  word-break: break-all;
-}}
-.path-note code {{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: var(--accent-soft);
-  border-radius: 8px;
-  padding: 2px 8px;
-  color: #21488a;
-}}
-.section-gap {{ height: 12px; }}
-.list-card {{
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow: 0 8px 24px rgba(20, 48, 90, 0.05);
-}}
-.list-head {{
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  font-size: 13px;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--line);
-}}
-.table-scroll {{
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}}
-table {{
-  border-collapse: collapse;
-  width: 100%;
-  min-width: 660px;
-}}
-th, td {{
-  text-align: left;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-}}
-th {{
-  background: #f6f9fd;
-  color: #5a6c82;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}}
-tbody tr:hover {{
-  background: #f8fbff;
-}}
-.name-col {{ min-width: 220px; width: auto; }}
-.size-col {{ width: 130px; color: #42556b; white-space: nowrap; }}
-.time-col {{ width: 190px; color: #5f7186; white-space: nowrap; }}
-.action-col {{ width: 120px; white-space: nowrap; text-align: right; }}
-.item-link {{
-  display: inline-block;
-  white-space: nowrap;
-  color: var(--text-main);
-  text-decoration: none;
-}}
-.item-link:hover {{
-  color: #1d4fae;
-  text-decoration: underline;
-}}
-.upload-card {{
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: 14px;
-  padding: 14px;
-  box-shadow: 0 8px 24px rgba(20, 48, 90, 0.05);
-}}
-.upload-top {{
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}}
-.visually-hidden-input {{
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  border: 0;
-}}
-.picked-file-name {{
-  min-width: 220px;
-  max-width: min(52vw, 520px);
-  padding: 8px 10px;
-  border: 1px solid #d3deeb;
-  border-radius: 10px;
-  background: #f8fbff;
-  color: #4a5e75;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}}
-.upload-meta {{
-  margin-top: 10px;
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--text-muted);
-  font-size: 13px;
-  flex-wrap: wrap;
-}}
-.upload-status {{
-  min-height: 20px;
-  margin-top: 8px;
-  font-size: 14px;
-}}
-.btn {{
-  appearance: none;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  padding: 8px 14px;
-  font-size: 14px;
-  line-height: 1.2;
-  cursor: pointer;
-  transition: background .2s ease, color .2s ease, border-color .2s ease, transform .06s ease;
-}}
-.btn:active {{
-  transform: translateY(1px);
-}}
-.btn:disabled {{
-  cursor: not-allowed;
-  opacity: 0.6;
-  transform: none;
-}}
-.btn-primary {{
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}}
-.btn-primary:hover {{
-  background: var(--primary-strong);
-  border-color: var(--primary-strong);
-}}
-.btn-secondary {{
-  background: #fff;
-  color: #315689;
-  border-color: #b9cbea;
-}}
-.btn-secondary:hover {{
-  background: #f3f7ff;
-}}
-.btn-danger {{
-  background: #fff;
-  color: #b3343f;
-  border-color: #e0b5ba;
-}}
-.btn-danger:hover {{
-  background: #fff3f4;
-  border-color: #cf8990;
-}}
-.btn-ghost {{
-  background: #fff;
-  color: #5a6880;
-  border-color: #ccd7e8;
-}}
-.btn-ghost:hover {{
-  background: #f7faff;
-}}
-.progress-wrap {{
-  margin-top: 9px;
-  height: 10px;
-  border-radius: 999px;
-  background: #edf2fa;
-  border: 1px solid #d6e0ee;
-  overflow: hidden;
-}}
-.progress-bar {{
-  height: 100%;
-  width: 0%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #2f6fed, #4787ff);
-  transition: width .18s ease;
-}}
-.progress-line {{
-  margin-top: 6px;
-  color: #5e7188;
-  font-size: 12px;
-}}
-.btn-small {{
-  padding: 6px 10px;
-  font-size: 12px;
-  border-radius: 8px;
-}}
-.hidden {{
-  display: none !important;
-}}
-.modal {{
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-}}
-.modal-backdrop {{
-  position: absolute;
-  inset: 0;
-  background: rgba(16, 31, 56, 0.45);
-}}
-.modal-panel {{
-  position: relative;
-  margin: min(12vh, 100px) auto 0;
-  width: min(420px, calc(100vw - 26px));
-  background: #fff;
-  border: 1px solid #d7e1ef;
-  border-radius: 14px;
-  padding: 16px;
-  box-shadow: 0 24px 48px rgba(13, 31, 59, 0.25);
-}}
-.modal-panel h3 {{
-  margin: 0 0 8px;
-  font-size: 19px;
-}}
-.modal-panel p {{
-  margin: 0;
-  white-space: pre-line;
-  color: #4c6078;
-  font-size: 14px;
-  line-height: 1.5;
-}}
-.modal-actions {{
-  margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}}
-@media (max-width: 760px) {{
-  .app-shell {{ width: calc(100vw - 18px); margin: 10px auto 18px; }}
-  .app-header {{ padding: 14px; border-radius: 12px; }}
-  .app-header h1 {{ font-size: 22px; }}
-  th, td {{ padding: 9px 8px; font-size: 13px; }}
-  .list-head {{ padding: 10px 10px; }}
-  .upload-card {{ padding: 12px; border-radius: 12px; }}
-  .upload-top > .btn {{ width: 100%; }}
-  .picked-file-name {{ min-width: 100%; max-width: 100%; }}
-  .upload-top {{ align-items: stretch; }}
-  .modal-actions .btn {{ width: auto; }}
-}}
-</style>
-</head>
-<body>
-<main class="app-shell">
-<section class="app-header">
-  <h1>{title}</h1>
-  <p class="path-note">Current path: <code>{path_label}</code></p>
-</section>
-<div class="section-gap"></div>
-{upload_panel}
-<div class="section-gap"></div>
-<section class="list-card">
-  <div class="list-head"><span>Items</span><span>{item_count} entries</span></div>
-  <div class="table-scroll">
-  <table>
-  <thead><tr><th class="name-col">Name</th><th class="size-col">Size</th><th class="time-col">Modified</th><th class="action-col">Action</th></tr></thead>
-  <tbody>
-  {rows}
-  </tbody>
-  </table>
-  </div>
-</section>
-</main>
-</body>
-</html>
-""".format(
-            title=html.escape(title),
-            path_label=html.escape(request_path),
-            item_count=len(rows),
-            rows="\n".join(rows),
-            upload_panel=upload_panel,
-        )
+    def _request_path_for_local_dir(self, local_dir: Path) -> str:
+        base_path = getattr(self.server, "base_path")
+        resolved = local_dir.resolve(strict=False)
+        if not _is_relative_to(resolved, base_path):
+            raise PermissionError("path escapes root")
 
-        payload = page.encode("utf-8", "surrogateescape")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
+        relative = resolved.relative_to(base_path)
+        if not relative.parts:
+            return "/"
+        return "/" + "/".join(quote(part) for part in relative.parts) + "/"
 
-        if not head_only:
-            self.wfile.write(payload)
 
     def _upload_panel_html(self, request_path: str) -> str:
         chunk_size = int(getattr(self.server, "default_chunk_size", DEFAULT_CHUNK_SIZE))
-        template = """
-<section class="upload-card">
-  <div class="upload-top">
-    <input id="upload-file" class="visually-hidden-input" type="file" />
-    <button id="pick-file-btn" class="btn btn-secondary" type="button">Choose File</button>
-    <div id="picked-file-name" class="picked-file-name">No file selected</div>
-    <button id="upload-btn" class="btn btn-primary" type="button">Upload File</button>
-  </div>
-  <div class="upload-meta">
-    <span>Chunk size: __CHUNK_SIZE__ bytes</span>
-    <span id="upload-detail">Ready</span>
-  </div>
-  <div id="upload-status" class="upload-status">Idle.</div>
-  <div class="progress-wrap"><div id="upload-progress-bar" class="progress-bar"></div></div>
-  <div class="progress-line"><span id="upload-progress-text">0%</span></div>
-</section>
-
-<div id="ui-modal" class="modal hidden" aria-hidden="true">
-  <div id="modal-backdrop" class="modal-backdrop"></div>
-  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <h3 id="modal-title">Confirm Action</h3>
-    <p id="modal-message"></p>
-    <div class="modal-actions">
-      <button id="modal-dismiss" class="btn btn-ghost" type="button">Cancel</button>
-      <button id="modal-secondary" class="btn btn-secondary hidden" type="button">Secondary</button>
-      <button id="modal-primary" class="btn btn-primary" type="button">OK</button>
-    </div>
-  </div>
-</div>
-
-<script>
-(function() {
-  const currentDir = __CURRENT_DIR__;
-  const chunkSize = __CHUNK_SIZE__;
-  const fileInput = document.getElementById('upload-file');
-  const pickFileBtn = document.getElementById('pick-file-btn');
-  const pickedFileNameEl = document.getElementById('picked-file-name');
-  const uploadBtn = document.getElementById('upload-btn');
-  const detailEl = document.getElementById('upload-detail');
-  const statusEl = document.getElementById('upload-status');
-  const progressBarEl = document.getElementById('upload-progress-bar');
-  const progressTextEl = document.getElementById('upload-progress-text');
-
-  const modalEl = document.getElementById('ui-modal');
-  const modalBackdropEl = document.getElementById('modal-backdrop');
-  const modalTitleEl = document.getElementById('modal-title');
-  const modalMessageEl = document.getElementById('modal-message');
-  const modalPrimaryEl = document.getElementById('modal-primary');
-  const modalSecondaryEl = document.getElementById('modal-secondary');
-  const modalDismissEl = document.getElementById('modal-dismiss');
-  let modalResolver = null;
-
-  function setStatus(text, isError) {
-    statusEl.textContent = text;
-    statusEl.style.color = isError ? '#c12f3a' : '#233549';
-  }
-
-  function setDetail(text) {
-    detailEl.textContent = text;
-  }
-
-  function setWriteControlsDisabled(disabled) {
-    uploadBtn.disabled = disabled;
-    pickFileBtn.disabled = disabled;
-    const buttons = Array.prototype.slice.call(document.querySelectorAll('.delete-btn'));
-    buttons.forEach(function(btn) {
-      btn.disabled = disabled;
-    });
-  }
-
-  function setPickedFileLabel(file) {
-    if (!file) {
-      pickedFileNameEl.textContent = 'No file selected';
-      return;
-    }
-    pickedFileNameEl.textContent = file.name + ' (' + formatBytes(file.size) + ')';
-  }
-
-  function formatBytes(value) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let size = Number(value) || 0;
-    let index = 0;
-    while (size >= 1024 && index < units.length - 1) {
-      size = size / 1024;
-      index += 1;
-    }
-    if (index === 0) {
-      return String(Math.floor(size)) + ' ' + units[index];
-    }
-    return size.toFixed(1) + ' ' + units[index];
-  }
-
-  function setProgress(done, total) {
-    if (total <= 0) {
-      progressBarEl.style.width = '0%';
-      progressTextEl.textContent = '0%';
-      return;
-    }
-    const percent = Math.max(0, Math.min(100, Math.floor(done / total * 100)));
-    progressBarEl.style.width = String(percent) + '%';
-    progressTextEl.textContent = String(percent) + '%';
-  }
-
-  function rangeCovered(ranges, start, end) {
-    for (const item of ranges || []) {
-      if (!Array.isArray(item) || item.length !== 2) continue;
-      if (item[0] <= start && item[1] >= end) return true;
-    }
-    return false;
-  }
-
-  function closeModal(result) {
-    if (!modalResolver) return;
-    const resolver = modalResolver;
-    modalResolver = null;
-    modalEl.classList.add('hidden');
-    modalEl.setAttribute('aria-hidden', 'true');
-    resolver(result);
-  }
-
-  function showChoiceModal(options) {
-    if (modalResolver) {
-      closeModal('dismiss');
-    }
-    modalTitleEl.textContent = options.title || 'Confirm Action';
-    modalMessageEl.textContent = options.message || '';
-    modalPrimaryEl.textContent = options.primaryText || 'OK';
-    modalDismissEl.textContent = options.dismissText || 'Cancel';
-
-    if (options.secondaryText) {
-      modalSecondaryEl.textContent = options.secondaryText;
-      modalSecondaryEl.classList.remove('hidden');
-    } else {
-      modalSecondaryEl.classList.add('hidden');
-    }
-
-    modalEl.classList.remove('hidden');
-    modalEl.setAttribute('aria-hidden', 'false');
-    return new Promise(function(resolve) {
-      modalResolver = resolve;
-    });
-  }
-
-  modalPrimaryEl.addEventListener('click', function() {
-    closeModal('primary');
-  });
-  modalSecondaryEl.addEventListener('click', function() {
-    closeModal('secondary');
-  });
-  modalDismissEl.addEventListener('click', function() {
-    closeModal('dismiss');
-  });
-  modalBackdropEl.addEventListener('click', function() {
-    closeModal('dismiss');
-  });
-  document.addEventListener('keydown', function(event) {
-    if (event.key === 'Escape') {
-      closeModal('dismiss');
-    }
-  });
-
-  async function postJson(url, payload) {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    let data = {};
-    try {
-      data = await response.json();
-    } catch (e) {
-      data = { message: response.statusText || 'Request failed' };
-    }
-    if (!response.ok) {
-      throw new Error(data.message || ('HTTP ' + response.status));
-    }
-    return data;
-  }
-
-  async function uploadFile() {
-    const file = fileInput.files && fileInput.files[0];
-    if (!file) {
-      setStatus('Please choose a file first.', true);
-      setDetail('No file selected');
-      setPickedFileLabel(null);
-      return;
-    }
-
-    setWriteControlsDisabled(true);
-    setStatus('Checking existing file...', false);
-    setDetail('Target: ' + file.name + ' (' + formatBytes(file.size) + ')');
-    setProgress(0, 100);
-
-    try {
-      const check = await postJson('/.upload/check', {
-        filename: file.name,
-        file_size: file.size,
-        directory: currentDir,
-      });
-
-      let mode = 'overwrite';
-      if (check.exists || check.meta_exists) {
-        if (check.can_resume) {
-          const action = await showChoiceModal({
-            title: 'Existing Upload Found',
-            message:
-              'A resumable upload was found for this file.\\n' +
-              'Received: ' + (check.bytes_received || 0) + ' / ' + file.size + ' bytes.\\n\\n' +
-              'Choose Resume to continue or Overwrite to restart from zero.',
-            primaryText: 'Resume',
-            secondaryText: 'Overwrite',
-            dismissText: 'Cancel'
-          });
-          if (action === 'primary') {
-            mode = 'resume';
-          } else if (action === 'secondary') {
-            mode = 'overwrite';
-          } else {
-            setStatus('Upload canceled.', false);
-            setDetail('Canceled by user');
-            return;
-          }
-        } else {
-          const action = await showChoiceModal({
-            title: 'File Conflict',
-            message:
-              (check.message || 'A file with the same name already exists.') +
-              '\\n\\nOverwrite the file to continue.',
-            primaryText: 'Overwrite',
-            dismissText: 'Cancel'
-          });
-          if (action !== 'primary') {
-            setStatus('Upload canceled.', false);
-            setDetail('Canceled by user');
-            return;
-          }
-          mode = 'overwrite';
-        }
-      }
-
-      const init = await postJson('/.upload/init', {
-        filename: file.name,
-        file_size: file.size,
-        directory: currentDir,
-        mode: mode,
-        chunk_size: chunkSize,
-      });
-
-      let ranges = init.uploaded_ranges || [];
-      let bytesReceived = init.bytes_received || 0;
-      setProgress(bytesReceived, file.size);
-      setDetail('Mode: ' + mode);
-
-      const totalChunks = Math.ceil(file.size / chunkSize) || 1;
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(file.size, start + chunkSize);
-
-        if (mode === 'resume' && rangeCovered(ranges, start, end)) {
-          continue;
-        }
-
-        const blob = file.slice(start, end);
-        const query = new URLSearchParams({
-          filename: file.name,
-          directory: currentDir,
-          start: String(start),
-          end: String(end),
-          file_size: String(file.size),
-        });
-
-        setStatus('Uploading chunk ' + (chunkIndex + 1) + ' / ' + totalChunks + ' ...', false);
-        const response = await fetch('/.upload/chunk?' + query.toString(), {
-          method: 'POST',
-          body: blob,
-        });
-
-        let chunkData = {};
-        try {
-          chunkData = await response.json();
-        } catch (e) {
-          chunkData = { message: response.statusText || 'Chunk upload failed' };
-        }
-
-        if (!response.ok) {
-          throw new Error(chunkData.message || ('Chunk failed: HTTP ' + response.status));
-        }
-
-        ranges = chunkData.uploaded_ranges || ranges;
-        bytesReceived = chunkData.bytes_received || bytesReceived;
-        setProgress(bytesReceived, file.size);
-      }
-
-      setStatus('Upload complete. Refreshing file list...', false);
-      setDetail('Done');
-      setProgress(file.size, file.size);
-      setTimeout(function() { window.location.reload(); }, 550);
-    } catch (err) {
-      setStatus(err && err.message ? err.message : String(err), true);
-      setDetail('Upload failed');
-    } finally {
-      setWriteControlsDisabled(false);
-    }
-  }
-
-  async function deleteEntry(entryName) {
-    const action = await showChoiceModal({
-      title: 'Delete Entry',
-      message:
-        'You are about to delete: ' + entryName + '\\n\\n' +
-        'Folders will be removed recursively and cannot be restored.',
-      primaryText: 'Delete',
-      dismissText: 'Cancel'
-    });
-
-    if (action !== 'primary') {
-      return;
-    }
-
-    setWriteControlsDisabled(true);
-    setStatus('Deleting ' + entryName + ' ...', false);
-    setDetail('Delete in progress');
-
-    try {
-      const data = await postJson('/.upload/delete', {
-        directory: currentDir,
-        filename: entryName
-      });
-      setStatus(data.message || ('Deleted ' + entryName), false);
-      setDetail('Delete completed');
-      setTimeout(function() { window.location.reload(); }, 350);
-    } catch (err) {
-      setStatus(err && err.message ? err.message : String(err), true);
-      setDetail('Delete failed');
-      setWriteControlsDisabled(false);
-    }
-  }
-
-  pickFileBtn.addEventListener('click', function() {
-    fileInput.click();
-  });
-
-  fileInput.addEventListener('change', function() {
-    const file = fileInput.files && fileInput.files[0];
-    setPickedFileLabel(file || null);
-    if (file) {
-      setDetail('Selected: ' + formatBytes(file.size));
-      setStatus('Ready to upload.', false);
-    }
-  });
-
-  uploadBtn.addEventListener('click', function() {
-    uploadFile();
-  });
-
-  document.addEventListener('click', function(event) {
-    const target = event.target;
-    if (!target) {
-      return;
-    }
-    const button = target.closest ? target.closest('.delete-btn') : null;
-    if (!button) {
-      return;
-    }
-    const entryName = button.getAttribute('data-delete-name');
-    if (!entryName) {
-      return;
-    }
-    deleteEntry(entryName);
-  });
-})();
-</script>
-"""
-        return template.replace("__CURRENT_DIR__", json.dumps(request_path)).replace("__CHUNK_SIZE__", str(chunk_size))
+        return render_upload_panel(request_path=request_path, chunk_size=chunk_size)
 
     def _handle_upload_status(self, query: str) -> None:
         params = parse_qs(query)
@@ -1421,10 +803,13 @@ tbody tr:hover {{
             "bytes_received": 0,
             "uploaded_ranges": [],
             "message": "",
+            "rename_suggestion": "",
         }
 
         if not exists and not meta_exists:
             return info
+
+        info["rename_suggestion"] = self._next_renamed_filename(target_dir, filename)
 
         if exists and not meta_exists:
             info["message"] = "same name file exists but no .upload metadata; resume unavailable"
@@ -1462,6 +847,61 @@ tbody tr:hover {{
 
         info["can_resume"] = True
         return info
+
+    @staticmethod
+    def _split_filename_suffix(filename: str) -> Tuple[str, str]:
+        dot_index = filename.rfind(".")
+        if dot_index <= 0:
+            return filename, ""
+        return filename[:dot_index], filename[dot_index:]
+
+    @staticmethod
+    def _split_rename_index(stem: str) -> Tuple[str, int]:
+        matched = re.match(r"^(.*) \((\d+)\)$", stem)
+        if not matched:
+            return stem, 1
+        base_name = matched.group(1)
+        index = int(matched.group(2)) + 1
+        return base_name, index
+
+    def _next_renamed_filename(self, target_dir: Path, filename: str) -> str:
+        stem, ext = self._split_filename_suffix(filename)
+        base_name, next_index = self._split_rename_index(stem)
+        max_index = max(0, next_index - 1)
+
+        # Follow the largest existing suffix, instead of filling gaps like (1).
+        pattern = re.compile(
+            r"^%s \((\d+)\)%s$" % (re.escape(base_name), re.escape(ext))
+        )
+        try:
+            entries = target_dir.iterdir()
+        except OSError:
+            entries = ()
+
+        for entry in entries:
+            entry_name = entry.name
+            logical_name = (
+                entry_name[:-7] if entry_name.endswith(".upload") else entry_name
+            )
+            matched = pattern.match(logical_name)
+            if not matched:
+                continue
+            index = int(matched.group(1))
+            if index > max_index:
+                max_index = index
+
+        next_index = max_index + 1
+
+        max_attempts = 100000
+        for _ in range(max_attempts):
+            candidate = "%s (%d)%s" % (base_name, next_index, ext)
+            candidate_path = target_dir / candidate
+            candidate_meta = self._meta_path_for(candidate_path)
+            if (not candidate_path.exists()) and (not candidate_meta.exists()):
+                return candidate
+            next_index += 1
+
+        raise RuntimeError("unable to generate renamed filename")
 
     def _resolve_upload_directory(self, directory: str) -> Path:
         path = directory.strip() or "/"
@@ -1635,6 +1075,7 @@ def serve(
     print("Available URLs:")
     for url in _build_startup_urls(bind, int(actual_port)):
         print("  - %s" % url)
+    print("List API enabled: /.api/list")
     if enable_upload:
         print("Upload API enabled: /.upload/check, /.upload/init, /.upload/chunk, /.upload/delete")
     else:
