@@ -115,6 +115,19 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertIn("Deleted directory", payload["message"])
         self.assertFalse(nested_dir.exists())
 
+    def test_delete_entry_with_trailing_slash_endpoint(self) -> None:
+        base = Path(self.temp_dir.name)
+        target_file = base / "file-to-delete.txt"
+        target_file.write_text("x", encoding="utf-8")
+
+        status_code, payload = self._post_json(
+            "/.upload/delete/",
+            {"filename": "file-to-delete.txt", "directory": "/"},
+        )
+        self.assertEqual(status_code, 200)
+        self.assertIn("Deleted file", payload["message"])
+        self.assertFalse(target_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

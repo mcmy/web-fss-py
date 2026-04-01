@@ -17,6 +17,15 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
+from .ranges import (
+    _add_range,
+    _count_covered_bytes,
+    _is_upload_complete,
+    _normalize_ranges,
+    _parse_single_range_header,
+    _range_is_covered,
+)
+from .startup_urls import _build_startup_urls
 
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
 MAX_JSON_BODY = 1024 * 1024
@@ -33,133 +42,6 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _normalize_ranges(raw_ranges: Any, file_size: int) -> List[List[int]]:
-    ranges: List[List[int]] = []
-    if not isinstance(raw_ranges, list):
-        return ranges
-
-    for item in raw_ranges:
-        if not (isinstance(item, list) or isinstance(item, tuple)):
-            continue
-        if len(item) != 2:
-            continue
-        try:
-            start = int(item[0])
-            end = int(item[1])
-        except (TypeError, ValueError):
-            continue
-        if start < 0:
-            start = 0
-        if end < 0:
-            end = 0
-        if start >= end:
-            continue
-        if start >= file_size:
-            continue
-        if end > file_size:
-            end = file_size
-        ranges.append([start, end])
-
-    if not ranges:
-        return []
-
-    ranges.sort(key=lambda r: (r[0], r[1]))
-    merged: List[List[int]] = [ranges[0]]
-    for start, end in ranges[1:]:
-        last = merged[-1]
-        if start <= last[1]:
-            if end > last[1]:
-                last[1] = end
-        else:
-            merged.append([start, end])
-    return merged
-
-
-def _add_range(ranges: Sequence[Sequence[int]], start: int, end: int, file_size: int) -> List[List[int]]:
-    raw = [list(item) for item in ranges]
-    raw.append([start, end])
-    return _normalize_ranges(raw, file_size)
-
-
-def _count_covered_bytes(ranges: Sequence[Sequence[int]]) -> int:
-    total = 0
-    for item in ranges:
-        if len(item) != 2:
-            continue
-        start = int(item[0])
-        end = int(item[1])
-        if end > start:
-            total += end - start
-    return total
-
-
-def _range_is_covered(ranges: Sequence[Sequence[int]], start: int, end: int) -> bool:
-    for item in ranges:
-        if len(item) != 2:
-            continue
-        if int(item[0]) <= start and int(item[1]) >= end:
-            return True
-    return False
-
-
-def _is_upload_complete(ranges: Sequence[Sequence[int]], file_size: int) -> bool:
-    if file_size == 0:
-        return True
-    if not ranges:
-        return False
-    if len(ranges) != 1:
-        return False
-    return int(ranges[0][0]) == 0 and int(ranges[0][1]) == file_size
-
-
-def _parse_single_range_header(range_header: str, file_size: int) -> Tuple[int, int]:
-    if not range_header:
-        raise ValueError("missing range header")
-
-    unit, sep, value = range_header.partition("=")
-    if sep != "=" or unit.strip().lower() != "bytes":
-        raise ValueError("unsupported range unit")
-
-    value = value.strip()
-    if not value or "," in value:
-        raise ValueError("only single range is supported")
-
-    start_text, sep, end_text = value.partition("-")
-    if sep != "-":
-        raise ValueError("invalid range format")
-
-    if start_text == "":
-        if end_text == "":
-            raise ValueError("invalid suffix range")
-        suffix = int(end_text)
-        if suffix <= 0:
-            raise ValueError("invalid suffix value")
-        if suffix > file_size:
-            suffix = file_size
-        return file_size - suffix, file_size
-
-    start = int(start_text)
-    if start < 0:
-        raise ValueError("start cannot be negative")
-    if start >= file_size:
-        raise ValueError("start out of bounds")
-
-    if end_text == "":
-        end = file_size
-    else:
-        end_inclusive = int(end_text)
-        if end_inclusive < start:
-            raise ValueError("invalid inclusive end")
-        end = end_inclusive + 1
-
-    if end > file_size:
-        end = file_size
-    if end <= start:
-        raise ValueError("invalid range size")
-
-    return start, end
 
 
 class UploadLockManager:
@@ -209,8 +91,14 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                         HTTPStatus.FORBIDDEN,
                     )
                     return
-                if parsed.path == "/.upload/status":
+                if parsed.path in ("/.upload/status", "/.upload/status/"):
                     self._handle_upload_status(parsed.query)
+                    return
+                if parsed.path in ("/.upload/delete", "/.upload/delete/"):
+                    self._send_json(
+                        {"message": "Use POST or DELETE method for this endpoint."},
+                        HTTPStatus.METHOD_NOT_ALLOWED,
+                    )
                     return
                 self._send_json({"message": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
                 return
@@ -249,16 +137,16 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            if parsed.path == "/.upload/check":
+            if parsed.path in ("/.upload/check", "/.upload/check/"):
                 self._handle_upload_check()
                 return
-            if parsed.path == "/.upload/init":
+            if parsed.path in ("/.upload/init", "/.upload/init/"):
                 self._handle_upload_init()
                 return
-            if parsed.path == "/.upload/chunk":
+            if parsed.path in ("/.upload/chunk", "/.upload/chunk/"):
                 self._handle_upload_chunk(parsed.query)
                 return
-            if parsed.path == "/.upload/delete":
+            if parsed.path in ("/.upload/delete", "/.upload/delete/"):
                 self._handle_delete_entry()
                 return
 
@@ -268,6 +156,29 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 {
                     "message": self._format_exception_message(
                         "Upload request failed", exc
+                    )
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+    def do_DELETE(self) -> None:
+        parsed = urlsplit(self.path)
+        try:
+            if not getattr(self.server, "enable_upload", False):
+                self._send_json(
+                    {"message": "Upload feature is disabled on this server."},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
+            if parsed.path in ("/.upload/delete", "/.upload/delete/"):
+                self._handle_delete_entry()
+                return
+            self._send_json({"message": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._send_json(
+                {
+                    "message": self._format_exception_message(
+                        "Delete request failed", exc
                     )
                 },
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -805,7 +716,6 @@ tbody tr:hover {{
   const statusEl = document.getElementById('upload-status');
   const progressBarEl = document.getElementById('upload-progress-bar');
   const progressTextEl = document.getElementById('upload-progress-text');
-  const deleteButtons = Array.prototype.slice.call(document.querySelectorAll('.delete-btn'));
 
   const modalEl = document.getElementById('ui-modal');
   const modalBackdropEl = document.getElementById('modal-backdrop');
@@ -828,7 +738,8 @@ tbody tr:hover {{
   function setWriteControlsDisabled(disabled) {
     uploadBtn.disabled = disabled;
     pickFileBtn.disabled = disabled;
-    deleteButtons.forEach(function(btn) {
+    const buttons = Array.prototype.slice.call(document.querySelectorAll('.delete-btn'));
+    buttons.forEach(function(btn) {
       btn.disabled = disabled;
     });
   }
@@ -1118,14 +1029,20 @@ tbody tr:hover {{
     uploadFile();
   });
 
-  deleteButtons.forEach(function(button) {
-    button.addEventListener('click', function() {
-      const entryName = button.getAttribute('data-delete-name');
-      if (!entryName) {
-        return;
-      }
-      deleteEntry(entryName);
-    });
+  document.addEventListener('click', function(event) {
+    const target = event.target;
+    if (!target) {
+      return;
+    }
+    const button = target.closest ? target.closest('.delete-btn') : null;
+    if (!button) {
+      return;
+    }
+    const entryName = button.getAttribute('data-delete-name');
+    if (!entryName) {
+      return;
+    }
+    deleteEntry(entryName);
   });
 })();
 </script>
@@ -1715,8 +1632,11 @@ def serve(
     host, actual_port = server.server_address[:2]
     root = server.base_path
     print("Serving HTTP on %s port %s (root: %s)" % (host, actual_port, root))
+    print("Available URLs:")
+    for url in _build_startup_urls(bind, int(actual_port)):
+        print("  - %s" % url)
     if enable_upload:
-        print("Upload API enabled: /.upload/check, /.upload/init, /.upload/chunk")
+        print("Upload API enabled: /.upload/check, /.upload/init, /.upload/chunk, /.upload/delete")
     else:
         print("Upload API disabled")
 
