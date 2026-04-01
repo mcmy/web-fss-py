@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show hidden files (dotfiles) in directory listing",
     )
     parser.add_argument(
+        "--serve-index-html",
+        action="store_true",
+        help="Auto-serve index.html/index.htm for directory requests",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version="%(prog)s " + __version__,
@@ -74,5 +79,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         enable_upload=not args.no_upload,
         chunk_size=args.chunk_size,
         show_hidden=args.show_hidden,
+        serve_index_html=args.serve_index_html,
     )
     return 0

@@ -193,6 +193,52 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertIn("invalid directory", payload["message"])
 
+    def test_directory_request_does_not_auto_serve_index_html_by_default(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "index.html").write_text("<html><body>home</body></html>", encoding="utf-8")
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        conn.close()
+
+        self.assertEqual(resp.status, 200)
+        self.assertIn("File Browser", body)
+        self.assertIn("/.api/list", body)
+        self.assertNotIn("<body>home</body>", body)
+
+    def test_directory_request_can_auto_serve_index_html_when_enabled(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+        self.server = WebFSServer(
+            ("127.0.0.1", 0),
+            WebFSRequestHandler,
+            base_path=self.temp_dir.name,
+            enable_upload=True,
+            default_chunk_size=4,
+            serve_index_html=True,
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.daemon = True
+        self.thread.start()
+        self.host, self.port = self.server.server_address[:2]
+
+        base = Path(self.temp_dir.name)
+        content = "<html><body>home</body></html>"
+        (base / "index.html").write_text(content, encoding="utf-8")
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        conn.close()
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(body, content)
+
     def test_upload_check_returns_rename_suggestion_for_plain_name(self) -> None:
         base = Path(self.temp_dir.name)
         (base / "movie.mp4").write_text("x", encoding="utf-8")

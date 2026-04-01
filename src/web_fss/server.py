@@ -74,11 +74,13 @@ class WebFSServer(ThreadingHTTPServer):
         enable_upload: bool = True,
         default_chunk_size: int = DEFAULT_CHUNK_SIZE,
         show_hidden: bool = False,
+        serve_index_html: bool = False,
     ) -> None:
         self.base_path = Path(base_path).resolve()
         self.enable_upload = enable_upload
         self.default_chunk_size = max(64 * 1024, int(default_chunk_size))
         self.show_hidden = bool(show_hidden)
+        self.serve_index_html = bool(serve_index_html)
         self.upload_locks = UploadLockManager()
         super().__init__(server_address, handler_class)
 
@@ -222,11 +224,12 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            for index_name in ("index.html", "index.htm"):
-                index_path = local_path / index_name
-                if index_path.is_file():
-                    self._send_file(index_path, head_only)
-                    return
+            if getattr(self.server, "serve_index_html", False):
+                for index_name in ("index.html", "index.htm"):
+                    index_path = local_path / index_name
+                    if index_path.is_file():
+                        self._send_file(index_path, head_only)
+                        return
 
             self._send_directory_listing(local_path, request_path, head_only)
             return
@@ -1064,6 +1067,7 @@ def serve(
     enable_upload: bool = True,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     show_hidden: bool = False,
+    serve_index_html: bool = False,
 ) -> None:
     server = WebFSServer(
         (bind, port),
@@ -1072,6 +1076,7 @@ def serve(
         enable_upload=enable_upload,
         default_chunk_size=chunk_size,
         show_hidden=show_hidden,
+        serve_index_html=serve_index_html,
     )
 
     host, actual_port = server.server_address[:2]
@@ -1085,6 +1090,10 @@ def serve(
         print("Hidden files: visible")
     else:
         print("Hidden files: hidden (use --show-hidden to display)")
+    if serve_index_html:
+        print("Directory index file: auto-serve enabled (index.html/index.htm)")
+    else:
+        print("Directory index file: auto-serve disabled (always show file manager)")
     if enable_upload:
         print("Upload API enabled: /.upload/check, /.upload/init, /.upload/chunk, /.upload/delete")
     else:
