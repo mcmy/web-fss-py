@@ -3,6 +3,6 @@ revision = 3
 requires-python = ">=3.7"
 
 [[package]]
-name = "web-fs-server"
+name = "web-fss"
 version = "0.2.0"
 source = { editable = "." }

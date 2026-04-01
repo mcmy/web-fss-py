@@ -3,14 +3,14 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "web-fs-server"
+name = "web-fss"
 version = "0.2.0"
 description = "A Python 3.7+ file server with directory listing, range download, and resumable upload."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.7"
 authors = [
-  { name = "web-fs-server contributors" }
+  { name = "web-fss contributors" }
 ]
 keywords = ["http", "server", "upload", "resume", "range", "fileserver"]
 classifiers = [
@@ -33,7 +33,7 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-web-fs-server = "web_fs_server.cli:main"
+web-fss = "web_fss.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

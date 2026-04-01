@@ -1,6 +1,6 @@
-# web-fs-server
+# web-fss
 
-`web-fs-server` is a practical replacement for `python -m http.server`.
+`web-fss` is a practical replacement for `python -m http.server`.
 
 ## Features
 
@@ -19,7 +19,7 @@ Python compatibility: `3.7` to `3.13` (and newer 3.x).
 ## Install
 
 ```bash
-pip install web-fs-server
+pip install web-fss
 ```
 
 For local development:
@@ -33,37 +33,41 @@ pip install -e .
 Default (current directory, port 8000):
 
 ```bash
-web-fs-server
+web-fss
+```
+or
+```bash
+python -m web_fss
 ```
 
 Tip (recommended quick run):
 
 ```bash
-uvx web-fs-server
+uvx web-fss
 ```
 
 Custom port and directory:
 
 ```bash
-web-fs-server 9000 -d /data/files
+web-fss 9000 -d /data/files
 ```
 
 Bind local only:
 
 ```bash
-web-fs-server -b 127.0.0.1
+web-fss -b 127.0.0.1
 ```
 
 Disable upload:
 
 ```bash
-web-fs-server --no-upload
+web-fss --no-upload
 ```
 
 Set upload chunk size (default 4MB):
 
 ```bash
-web-fs-server --chunk-size 1048576
+web-fss --chunk-size 1048576
 ```
 
 ## Resumable Upload

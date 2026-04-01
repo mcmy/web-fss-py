@@ -1,6 +1,6 @@
-# web-fs-server
+# web-fss
 
-`web-fs-server` 是 `python -m http.server` 的实用替代方案。
+`web-fss` 是 `python -m http.server` 的实用替代方案。
 
 ## 功能
 
@@ -19,7 +19,7 @@ Python 兼容版本：`3.7` 到 `3.13`（及后续 3.x）。
 ## 安装
 
 ```bash
-pip install web-fs-server
+pip install web-fss
 ```
 
 本地开发安装：
@@ -33,37 +33,41 @@ pip install -e .
 默认（当前目录，端口 8000）：
 
 ```bash
-web-fs-server
+web-fss
+```
+或者
+```bash
+python -m web_fss
 ```
 
 提示（推荐快速启动）：
 
 ```bash
-uvx web-fs-server
+uvx web-fss
 ```
 
 指定端口和目录：
 
 ```bash
-web-fs-server 9000 -d /data/files
+web-fss 9000 -d /data/files
 ```
 
 只监听本地：
 
 ```bash
-web-fs-server -b 127.0.0.1
+web-fss -b 127.0.0.1
 ```
 
 关闭上传：
 
 ```bash
-web-fs-server --no-upload
+web-fss --no-upload
 ```
 
 设置上传分片大小（默认 4MB）：
 
 ```bash
-web-fs-server --chunk-size 1048576
+web-fss --chunk-size 1048576
 ```
 
 ## 续传逻辑

@@ -8,7 +8,7 @@ from .server import DEFAULT_CHUNK_SIZE, serve
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="web-fs-server",
+        prog="web-fss",
         description=(
             "Simple file server compatible with Python 3.7+; "
             "supports directory listing, range download and resumable upload."

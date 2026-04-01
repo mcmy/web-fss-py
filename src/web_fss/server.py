@@ -82,7 +82,7 @@ class WebFSServer(ThreadingHTTPServer):
 
 
 class WebFSRequestHandler(BaseHTTPRequestHandler):
-    server_version = "web-fs-server/%s" % __version__
+    server_version = "web-fss/%s" % __version__
 
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)

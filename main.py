@@ -6,7 +6,7 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
-from web_fs_server.cli import main
+from web_fss.cli import main
 
 
 if __name__ == "__main__":
