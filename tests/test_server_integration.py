@@ -141,6 +141,7 @@ class ServerIntegrationTests(unittest.TestCase):
         (base / "folder").mkdir()
         (base / "folder" / "child.txt").write_text("child", encoding="utf-8")
         (base / "root.txt").write_text("hello", encoding="utf-8")
+        (base / ".hidden.txt").write_text("secret", encoding="utf-8")
         (base / "hidden.upload").write_text("meta", encoding="utf-8")
 
         status_code, payload = self._get_json("/.api/list?directory=/")
@@ -150,13 +151,27 @@ class ServerIntegrationTests(unittest.TestCase):
         names = [item["name"] for item in payload["entries"]]
         self.assertIn("folder", names)
         self.assertIn("root.txt", names)
-        self.assertNotIn("hidden.upload", names)
+        self.assertIn("hidden.upload", names)
+        self.assertNotIn(".hidden.txt", names)
 
         folder_item = next(item for item in payload["entries"] if item["name"] == "folder")
         self.assertEqual(folder_item["display_name"], "folder/")
         self.assertEqual(folder_item["href"], "folder/")
         self.assertTrue(folder_item["can_delete"])
         self.assertFalse(folder_item["is_parent"])
+
+    def test_list_entries_api_root_show_hidden(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / ".hidden.txt").write_text("secret", encoding="utf-8")
+        (base / ".env").write_text("A=B", encoding="utf-8")
+
+        self.server.show_hidden = True
+        status_code, payload = self._get_json("/.api/list?directory=/")
+        self.assertEqual(status_code, 200)
+
+        names = [item["name"] for item in payload["entries"]]
+        self.assertIn(".hidden.txt", names)
+        self.assertIn(".env", names)
 
     def test_list_entries_api_subdirectory_has_parent_entry(self) -> None:
         base = Path(self.temp_dir.name)

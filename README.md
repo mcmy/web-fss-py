@@ -64,6 +64,12 @@ Disable upload:
 web-fss --no-upload
 ```
 
+Show hidden files (dotfiles):
+
+```bash
+web-fss --show-hidden
+```
+
 Set upload chunk size (default 4MB):
 
 ```bash

@@ -73,10 +73,12 @@ class WebFSServer(ThreadingHTTPServer):
         base_path: str,
         enable_upload: bool = True,
         default_chunk_size: int = DEFAULT_CHUNK_SIZE,
+        show_hidden: bool = False,
     ) -> None:
         self.base_path = Path(base_path).resolve()
         self.enable_upload = enable_upload
         self.default_chunk_size = max(64 * 1024, int(default_chunk_size))
+        self.show_hidden = bool(show_hidden)
         self.upload_locks = UploadLockManager()
         super().__init__(server_address, handler_class)
 
@@ -345,6 +347,7 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
         entries = sorted(local_dir.iterdir(), key=lambda p: p.name.lower())
         out: List[Dict[str, Any]] = []
         can_manage = getattr(self.server, "enable_upload", False)
+        show_hidden = getattr(self.server, "show_hidden", False)
 
         if request_path != "/":
             out.append(
@@ -361,7 +364,7 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
 
         for entry in entries:
             name = entry.name
-            if name.endswith(".upload"):
+            if (not show_hidden) and name.startswith("."):
                 continue
 
             display_name = name
@@ -1060,6 +1063,7 @@ def serve(
     directory: str = ".",
     enable_upload: bool = True,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    show_hidden: bool = False,
 ) -> None:
     server = WebFSServer(
         (bind, port),
@@ -1067,6 +1071,7 @@ def serve(
         base_path=directory,
         enable_upload=enable_upload,
         default_chunk_size=chunk_size,
+        show_hidden=show_hidden,
     )
 
     host, actual_port = server.server_address[:2]
@@ -1076,6 +1081,10 @@ def serve(
     for url in _build_startup_urls(bind, int(actual_port)):
         print("  - %s" % url)
     print("List API enabled: /.api/list")
+    if show_hidden:
+        print("Hidden files: visible")
+    else:
+        print("Hidden files: hidden (use --show-hidden to display)")
     if enable_upload:
         print("Upload API enabled: /.upload/check, /.upload/init, /.upload/chunk, /.upload/delete")
     else:

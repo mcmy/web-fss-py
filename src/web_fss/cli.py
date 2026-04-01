@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable upload endpoints and upload button",
     )
     parser.add_argument(
+        "--show-hidden",
+        action="store_true",
+        help="Show hidden files (dotfiles) in directory listing",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version="%(prog)s " + __version__,
@@ -68,5 +73,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         directory=args.directory,
         enable_upload=not args.no_upload,
         chunk_size=args.chunk_size,
+        show_hidden=args.show_hidden,
     )
     return 0

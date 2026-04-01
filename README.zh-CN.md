@@ -64,6 +64,12 @@ web-fss -b 127.0.0.1
 web-fss --no-upload
 ```
 
+显示隐藏文件（dotfile）：
+
+```bash
+web-fss --show-hidden
+```
+
 设置上传分片大小（默认 4MB）：
 
 ```bash
