@@ -13,6 +13,8 @@
 - `.upload` metadata for upload progress
 - Auto-remove `.upload` after upload completion
 - File and folder delete button in UI
+- Open mode switch in UI: `Preview` (browser MIME rendering) / `Download`
+- `--serve-index-html` to auto-serve `index.html`/`index.htm` on directory request
 
 Python compatibility: `3.7` to `3.13` (and newer 3.x).
 
@@ -74,6 +76,12 @@ Set upload chunk size (default 4MB):
 
 ```bash
 web-fss --chunk-size 1048576
+```
+
+Auto-serve `index.html`/`index.htm` for directory requests:
+
+```bash
+web-fss --serve-index-html
 ```
 
 ## Resumable Upload

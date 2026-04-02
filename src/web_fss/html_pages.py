@@ -80,6 +80,39 @@ body {
   color: var(--text-muted);
   border-bottom: 1px solid var(--line);
 }
+.list-head-left {
+  color: var(--text-muted);
+}
+.list-head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.open-mode-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid #d7e3f2;
+  border-radius: 999px;
+  background: #f7fbff;
+}
+.open-mode-label {
+  color: #5a6c82;
+  font-size: 12px;
+}
+.open-mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #42556b;
+  font-size: 12px;
+  cursor: pointer;
+}
+.open-mode-option input {
+  margin: 0;
+}
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -294,7 +327,8 @@ tbody tr:hover {
   .app-header { padding: 14px; border-radius: 12px; }
   .app-header h1 { font-size: 22px; }
   th, td { padding: 9px 8px; font-size: 13px; }
-  .list-head { padding: 10px 10px; }
+  .list-head { padding: 10px 10px; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .list-head-right { width: 100%; justify-content: space-between; }
   .upload-card { padding: 12px; border-radius: 12px; }
   .upload-top > .btn { width: 100%; }
   .picked-file-name { min-width: 100%; max-width: 100%; }
@@ -313,7 +347,17 @@ tbody tr:hover {
 __UPLOAD_PANEL__
 <div class="section-gap"></div>
 <section class="list-card">
-  <div class="list-head"><span>Items</span><span id="item-count">Loading...</span></div>
+  <div class="list-head">
+    <span class="list-head-left">Items</span>
+    <div class="list-head-right">
+      <div class="open-mode-group" role="group" aria-label="File open mode">
+        <span class="open-mode-label">Open:</span>
+        <label class="open-mode-option"><input id="open-mode-preview" type="radio" name="open-mode" value="preview" />Preview</label>
+        <label class="open-mode-option"><input id="open-mode-download" type="radio" name="open-mode" value="download" checked />Download</label>
+      </div>
+      <span id="item-count">Loading...</span>
+    </div>
+  </div>
   <div class="table-scroll">
   <table>
   <thead><tr><th class="name-col">Name</th><th class="size-col">Size</th><th class="time-col">Modified</th><th class="action-col">Action</th></tr></thead>
@@ -334,6 +378,14 @@ __UPLOAD_PANEL__
   const currentDir = __CURRENT_DIR__;
   const tableBodyEl = document.getElementById('file-table-body');
   const itemCountEl = document.getElementById('item-count');
+  const openModePreviewEl = document.getElementById('open-mode-preview');
+  const openModeDownloadEl = document.getElementById('open-mode-download');
+
+  const OPEN_MODE_STORAGE_KEY = 'web-fss-open-mode';
+  const OPEN_MODE_PREVIEW = 'preview';
+  const OPEN_MODE_DOWNLOAD = 'download';
+  let currentOpenMode = OPEN_MODE_DOWNLOAD;
+  let currentEntries = [];
 
   function escapeHtml(value) {
     return String(value || '')
@@ -342,6 +394,75 @@ __UPLOAD_PANEL__
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function readOpenMode() {
+    try {
+      const stored = window.localStorage.getItem(OPEN_MODE_STORAGE_KEY);
+      if (stored === OPEN_MODE_PREVIEW || stored === OPEN_MODE_DOWNLOAD) {
+        return stored;
+      }
+    } catch (e) {
+      return OPEN_MODE_DOWNLOAD;
+    }
+    return OPEN_MODE_DOWNLOAD;
+  }
+
+  function writeOpenMode(mode) {
+    try {
+      window.localStorage.setItem(OPEN_MODE_STORAGE_KEY, mode);
+    } catch (e) {
+      return;
+    }
+  }
+
+  function normalizeEntryHref(item) {
+    if (!item || !item.href) {
+      return '#';
+    }
+
+    const href = String(item.href);
+    if (item.is_parent || href.endsWith('/')) {
+      return href;
+    }
+
+    const hashIndex = href.indexOf('#');
+    const hrefWithoutHash = hashIndex >= 0 ? href.slice(0, hashIndex) : href;
+    const hashPart = hashIndex >= 0 ? href.slice(hashIndex) : '';
+    const queryIndex = hrefWithoutHash.indexOf('?');
+    const pathPart = queryIndex >= 0 ? hrefWithoutHash.slice(0, queryIndex) : hrefWithoutHash;
+    const queryPart = queryIndex >= 0 ? hrefWithoutHash.slice(queryIndex + 1) : '';
+    const searchParams = new URLSearchParams(queryPart);
+
+    if (currentOpenMode === OPEN_MODE_DOWNLOAD) {
+      searchParams.set('download', '1');
+    } else {
+      searchParams.delete('download');
+    }
+
+    const finalQuery = searchParams.toString();
+    return pathPart + (finalQuery ? '?' + finalQuery : '') + hashPart;
+  }
+
+  function updateOpenModeControls() {
+    if (openModePreviewEl) {
+      openModePreviewEl.checked = currentOpenMode === OPEN_MODE_PREVIEW;
+    }
+    if (openModeDownloadEl) {
+      openModeDownloadEl.checked = currentOpenMode === OPEN_MODE_DOWNLOAD;
+    }
+  }
+
+  function setOpenMode(mode, options) {
+    const config = options || {};
+    currentOpenMode = mode === OPEN_MODE_PREVIEW ? OPEN_MODE_PREVIEW : OPEN_MODE_DOWNLOAD;
+    updateOpenModeControls();
+    if (config.persist !== false) {
+      writeOpenMode(currentOpenMode);
+    }
+    if (config.rerender !== false) {
+      renderEntries(currentEntries);
+    }
   }
 
   function setListError(message) {
@@ -357,7 +478,8 @@ __UPLOAD_PANEL__
   }
 
   function renderEntries(entries) {
-    if (!Array.isArray(entries) || entries.length === 0) {
+    currentEntries = Array.isArray(entries) ? entries : [];
+    if (currentEntries.length === 0) {
       itemCountEl.textContent = '0 entries';
       tableBodyEl.innerHTML = '' +
         '<tr>' +
@@ -369,9 +491,9 @@ __UPLOAD_PANEL__
       return;
     }
 
-    itemCountEl.textContent = String(entries.length) + ' entries';
+    itemCountEl.textContent = String(currentEntries.length) + ' entries';
     const parts = [];
-    for (const item of entries) {
+    for (const item of currentEntries) {
       let actionHtml = '-';
       if (item && item.can_delete && !item.is_parent && item.name) {
         actionHtml =
@@ -381,7 +503,7 @@ __UPLOAD_PANEL__
       }
       parts.push(
         '<tr>' +
-          '<td class="name-col"><a class="item-link" href="' + escapeHtml(item.href || '#') + '">' +
+          '<td class="name-col"><a class="item-link" href="' + escapeHtml(normalizeEntryHref(item)) + '">' +
             escapeHtml(item.display_name || '') +
           '</a></td>' +
           '<td class="size-col">' + escapeHtml(item.size || '-') + '</td>' +
@@ -412,6 +534,22 @@ __UPLOAD_PANEL__
       setListError(err && err.message ? err.message : String(err));
       throw err;
     }
+  }
+
+  setOpenMode(readOpenMode(), { persist: false, rerender: false });
+  if (openModePreviewEl) {
+    openModePreviewEl.addEventListener('change', function() {
+      if (openModePreviewEl.checked) {
+        setOpenMode(OPEN_MODE_PREVIEW);
+      }
+    });
+  }
+  if (openModeDownloadEl) {
+    openModeDownloadEl.addEventListener('change', function() {
+      if (openModeDownloadEl.checked) {
+        setOpenMode(OPEN_MODE_DOWNLOAD);
+      }
+    });
   }
 
   window.reloadFileList = loadFileList;

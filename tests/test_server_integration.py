@@ -160,6 +160,9 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertTrue(folder_item["can_delete"])
         self.assertFalse(folder_item["is_parent"])
 
+        file_item = next(item for item in payload["entries"] if item["name"] == "root.txt")
+        self.assertEqual(file_item["href"], "root.txt?download=1")
+
     def test_list_entries_api_root_show_hidden(self) -> None:
         base = Path(self.temp_dir.name)
         (base / ".hidden.txt").write_text("secret", encoding="utf-8")
@@ -277,6 +280,37 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["exists"])
         self.assertEqual(payload["rename_suggestion"], "movie (4).mp4")
+
+    def test_file_request_with_download_query_sets_attachment_disposition(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "hello.txt").write_text("hello", encoding="utf-8")
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/hello.txt?download=1")
+        resp = conn.getresponse()
+        body = resp.read()
+        disposition = resp.getheader("Content-Disposition")
+        conn.close()
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(body, b"hello")
+        self.assertIsNotNone(disposition)
+        self.assertIn("attachment;", disposition)
+        self.assertIn('filename="hello.txt"', disposition)
+
+    def test_file_request_without_download_query_does_not_set_attachment_disposition(self) -> None:
+        base = Path(self.temp_dir.name)
+        (base / "hello.txt").write_text("hello", encoding="utf-8")
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/hello.txt")
+        resp = conn.getresponse()
+        resp.read()
+        disposition = resp.getheader("Content-Disposition")
+        conn.close()
+
+        self.assertEqual(resp.status, 200)
+        self.assertIsNone(disposition)
 
 
 if __name__ == "__main__":

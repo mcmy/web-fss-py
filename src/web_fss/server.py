@@ -207,6 +207,7 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
     def _serve_path(self, head_only: bool) -> None:
         parsed = urlsplit(self.path)
         request_path = parsed.path or "/"
+        force_download = self._parse_download_query(parsed.query)
 
         try:
             local_path = self._resolve_url_path(request_path)
@@ -228,7 +229,11 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 for index_name in ("index.html", "index.htm"):
                     index_path = local_path / index_name
                     if index_path.is_file():
-                        self._send_file(index_path, head_only)
+                        self._send_file(
+                            index_path,
+                            head_only,
+                            force_download=force_download,
+                        )
                         return
 
             self._send_directory_listing(local_path, request_path, head_only)
@@ -238,9 +243,9 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "File not found")
             return
 
-        self._send_file(local_path, head_only)
+        self._send_file(local_path, head_only, force_download=force_download)
 
-    def _send_file(self, file_path: Path, head_only: bool) -> None:
+    def _send_file(self, file_path: Path, head_only: bool, force_download: bool = False) -> None:
         stat_info = file_path.stat()
         file_size = stat_info.st_size
 
@@ -268,6 +273,11 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(content_length))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Last-Modified", email.utils.formatdate(stat_info.st_mtime, usegmt=True))
+        if force_download:
+            self.send_header(
+                "Content-Disposition",
+                self._build_attachment_disposition(file_path),
+            )
         if status == HTTPStatus.PARTIAL_CONTENT:
             self.send_header(
                 "Content-Range",
@@ -401,8 +411,10 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
             if is_dir:
                 display_name += "/"
                 link_name += "/"
-            elif is_symlink:
-                display_name += "@"
+            else:
+                if is_symlink:
+                    display_name += "@"
+                link_name += "?download=1"
 
             if stat_info and is_file:
                 size_text = self._human_size(stat_info.st_size)
@@ -420,6 +432,30 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
             )
 
         return out
+
+    @staticmethod
+    def _parse_download_query(query: str) -> bool:
+        if not query:
+            return False
+        params = parse_qs(query)
+        if "download" not in params:
+            return False
+        values = params.get("download") or [""]
+        value = str(values[0] if values else "").strip().lower()
+        return value in ("", "1", "true", "yes")
+
+    @staticmethod
+    def _build_attachment_disposition(file_path: Path) -> str:
+        file_name = file_path.name or "download"
+        fallback_name = "".join(
+            ch if (0x20 <= ord(ch) <= 0x7E and ch not in ('"', "\\")) else "_"
+            for ch in file_name
+        ) or "download"
+        encoded_name = quote(file_name, safe="")
+        return (
+            'attachment; filename="%s"; filename*=UTF-8\'\'%s'
+            % (fallback_name, encoded_name)
+        )
 
     def _request_path_for_local_dir(self, local_dir: Path) -> str:
         base_path = getattr(self.server, "base_path")

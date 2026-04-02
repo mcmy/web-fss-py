@@ -13,6 +13,8 @@
 - 用 `.upload` 元数据记录上传进度
 - 上传完成自动删除 `.upload`
 - UI 支持删除文件和文件夹
+- UI 增加打开模式切换：`Preview`（按浏览器 MIME 预览）/ `Download`
+- 支持 `--serve-index-html`：目录请求时自动返回 `index.html`/`index.htm`
 
 Python 兼容版本：`3.7` 到 `3.13`（及后续 3.x）。
 
@@ -74,6 +76,12 @@ web-fss --show-hidden
 
 ```bash
 web-fss --chunk-size 1048576
+```
+
+目录请求自动返回 `index.html`/`index.htm`：
+
+```bash
+web-fss --serve-index-html
 ```
 
 ## 续传逻辑
