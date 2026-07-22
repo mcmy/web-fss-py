@@ -15,6 +15,7 @@
 - UI 支持删除文件和文件夹
 - UI 增加打开模式切换：`Preview`（按浏览器 MIME 预览）/ `Download`
 - 支持 `--serve-index-html`：目录请求时自动返回 `index.html`/`index.htm`
+- 支持反向代理子路径：`--base-path`
 
 Python 兼容版本：`3.7` 到 `3.13`（及后续 3.x）。
 
@@ -84,6 +85,14 @@ web-fss --chunk-size 1048576
 web-fss --serve-index-html
 ```
 
+挂在反向代理路径前缀下运行：
+
+```bash
+web-fss -b 127.0.0.1 --base-path /files
+```
+
+当反向代理把前缀保留后转发时使用 `--base-path`，例如后端会收到 `/files/.api/list` 和 `/files/example.zip`。如果反向代理转发前已经剥离 `/files`，通常不需要额外参数；Web UI 会根据当前浏览器路径生成 API 地址。
+
 ## 续传逻辑
 
 上传 `a.zip` 时会创建：
@@ -113,6 +122,8 @@ web-fss --serve-index-html
 - `POST /.upload/chunk`
 - `POST /.upload/delete`
 - `DELETE /.upload/delete`
+
+使用 `--base-path /files` 时，接口会挂在 `/files` 下，例如 `GET /files/.api/list?directory=/path/`。
 
 ## 许可证
 

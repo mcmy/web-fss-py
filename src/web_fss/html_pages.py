@@ -4,7 +4,11 @@ import html
 import json
 
 
-def render_directory_page(title: str, request_path: str, upload_panel: str) -> str:
+def render_directory_page(
+    title: str,
+    request_path: str,
+    upload_panel: str,
+) -> str:
     page = """
 <!DOCTYPE html>
 <html>
@@ -416,6 +420,38 @@ __UPLOAD_PANEL__
     }
   }
 
+  function encodeDirectoryPath(directory) {
+    const text = String(directory || '/');
+    const parts = text.split('/').filter(Boolean).map(function(part) {
+      return encodeURIComponent(part);
+    });
+    if (parts.length === 0) {
+      return '/';
+    }
+    return '/' + parts.join('/') + (text.endsWith('/') ? '/' : '');
+  }
+
+  function getApiBasePath() {
+    const currentPath = window.location.pathname || '/';
+    const encodedCurrentDir = encodeDirectoryPath(currentDir);
+    if (encodedCurrentDir === '/') {
+      if (currentPath === '/') {
+        return '';
+      }
+      return currentPath.endsWith('/') ? currentPath.slice(0, -1) : currentPath;
+    }
+    if (currentPath.endsWith(encodedCurrentDir)) {
+      return currentPath.slice(0, currentPath.length - encodedCurrentDir.length);
+    }
+    return '';
+  }
+
+  const apiBasePath = getApiBasePath();
+
+  function apiUrl(pathname) {
+    return apiBasePath + pathname;
+  }
+
   function normalizeEntryHref(item) {
     if (!item || !item.href) {
       return '#';
@@ -518,7 +554,7 @@ __UPLOAD_PANEL__
   async function loadFileList() {
     try {
       const query = new URLSearchParams({ directory: currentDir });
-      const response = await fetch('/.api/list?' + query.toString(), { cache: 'no-store' });
+      const response = await fetch(apiUrl('/.api/list?' + query.toString()), { cache: 'no-store' });
       let data = {};
       try {
         data = await response.json();
@@ -569,7 +605,10 @@ __UPLOAD_PANEL__
     )
 
 
-def render_upload_panel(request_path: str, chunk_size: int) -> str:
+def render_upload_panel(
+    request_path: str,
+    chunk_size: int,
+) -> str:
     template = """
 <section class="upload-card">
   <div class="upload-top">
@@ -741,6 +780,38 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
     return data;
   }
 
+  function encodeDirectoryPath(directory) {
+    const text = String(directory || '/');
+    const parts = text.split('/').filter(Boolean).map(function(part) {
+      return encodeURIComponent(part);
+    });
+    if (parts.length === 0) {
+      return '/';
+    }
+    return '/' + parts.join('/') + (text.endsWith('/') ? '/' : '');
+  }
+
+  function getApiBasePath() {
+    const currentPath = window.location.pathname || '/';
+    const encodedCurrentDir = encodeDirectoryPath(currentDir);
+    if (encodedCurrentDir === '/') {
+      if (currentPath === '/') {
+        return '';
+      }
+      return currentPath.endsWith('/') ? currentPath.slice(0, -1) : currentPath;
+    }
+    if (currentPath.endsWith(encodedCurrentDir)) {
+      return currentPath.slice(0, currentPath.length - encodedCurrentDir.length);
+    }
+    return '';
+  }
+
+  const apiBasePath = getApiBasePath();
+
+  function apiUrl(pathname) {
+    return apiBasePath + pathname;
+  }
+
   async function refreshFileList() {
     if (typeof window.reloadFileList === 'function') {
       try {
@@ -762,7 +833,7 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
 
     let attempts = 0;
     while (attempts < 2000) {
-      const probe = await postJson('/.upload/check', {
+      const probe = await postJson(apiUrl('/.upload/check'), {
         filename: candidate,
         file_size: fileSize,
         directory: currentDir,
@@ -795,7 +866,7 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
     setProgress(0, 100);
 
     try {
-      const check = await postJson('/.upload/check', {
+      const check = await postJson(apiUrl('/.upload/check'), {
         filename: file.name,
         file_size: file.size,
         directory: currentDir,
@@ -823,7 +894,7 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
 
       setDetail('Target: ' + targetFilename + ' (' + formatBytes(file.size) + ')');
 
-      const init = await postJson('/.upload/init', {
+      const init = await postJson(apiUrl('/.upload/init'), {
         filename: targetFilename,
         file_size: file.size,
         directory: currentDir,
@@ -849,7 +920,7 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
         });
 
         setStatus('Uploading chunk ' + (chunkIndex + 1) + ' / ' + totalChunks + ' ...', false);
-        const response = await fetch('/.upload/chunk?' + query.toString(), {
+        const response = await fetch(apiUrl('/.upload/chunk?' + query.toString()), {
           method: 'POST',
           body: blob,
         });
@@ -905,7 +976,7 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
     setDetail('Delete in progress');
 
     try {
-      const data = await postJson('/.upload/delete', {
+      const data = await postJson(apiUrl('/.upload/delete'), {
         directory: currentDir,
         filename: entryName
       });
@@ -959,6 +1030,7 @@ def render_upload_panel(request_path: str, chunk_size: int) -> str:
 })();
 </script>
 """
-    return template.replace("__CURRENT_DIR__", json.dumps(request_path)).replace(
-        "__CHUNK_SIZE__", str(chunk_size)
+    return (
+        template.replace("__CURRENT_DIR__", json.dumps(request_path))
+        .replace("__CHUNK_SIZE__", str(chunk_size))
     )

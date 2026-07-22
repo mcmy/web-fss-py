@@ -35,6 +35,29 @@ READ_BUFFER_SIZE = 64 * 1024
 LIST_API_PATHS = ("/.api/list", "/.api/list/")
 
 
+def _normalize_public_base_path(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw or raw == "/":
+        return ""
+
+    path = urlsplit(raw).path
+    if not path or path == "/":
+        return ""
+
+    if not path.startswith("/"):
+        path = "/" + path
+
+    parts = [part for part in path.split("/") if part]
+    if any(part in (".", "..") for part in parts):
+        raise ValueError("public base path cannot contain . or .. segments")
+
+    return "/" + "/".join(parts)
+
+
+# Backward-compatible alias for tests/imports from earlier development builds.
+_normalize_url_base_path = _normalize_public_base_path
+
+
 def _utc_now_iso() -> str:
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -75,12 +98,15 @@ class WebFSServer(ThreadingHTTPServer):
         default_chunk_size: int = DEFAULT_CHUNK_SIZE,
         show_hidden: bool = False,
         serve_index_html: bool = False,
+        public_base_path: str = "",
     ) -> None:
         self.base_path = Path(base_path).resolve()
         self.enable_upload = enable_upload
         self.default_chunk_size = max(64 * 1024, int(default_chunk_size))
         self.show_hidden = bool(show_hidden)
         self.serve_index_html = bool(serve_index_html)
+        self.public_base_path = _normalize_public_base_path(public_base_path)
+        self.url_base_path = self.public_base_path
         self.upload_locks = UploadLockManager()
         super().__init__(server_address, handler_class)
 
@@ -90,21 +116,28 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
+        matched, request_path, needs_slash_redirect = self._strip_public_base_path(parsed.path)
+        if not matched:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+        if needs_slash_redirect:
+            self._send_relative_redirect(parsed.path, parsed.query)
+            return
         try:
-            if parsed.path in LIST_API_PATHS:
+            if request_path in LIST_API_PATHS:
                 self._handle_list_entries(parsed.query)
                 return
-            if parsed.path.startswith("/.upload/"):
+            if request_path.startswith("/.upload/"):
                 if not getattr(self.server, "enable_upload", False):
                     self._send_json(
                         {"message": "Upload feature is disabled on this server."},
                         HTTPStatus.FORBIDDEN,
                     )
                     return
-                if parsed.path in ("/.upload/status", "/.upload/status/"):
+                if request_path in ("/.upload/status", "/.upload/status/"):
                     self._handle_upload_status(parsed.query)
                     return
-                if parsed.path in ("/.upload/delete", "/.upload/delete/"):
+                if request_path in ("/.upload/delete", "/.upload/delete/"):
                     self._send_json(
                         {"message": "Use POST or DELETE method for this endpoint."},
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -112,9 +145,9 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json({"message": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
                 return
-            self._serve_path(head_only=False)
+            self._serve_path(request_path, parsed.query, head_only=False)
         except Exception as exc:
-            if parsed.path in LIST_API_PATHS:
+            if request_path in LIST_API_PATHS:
                 self._send_json(
                     {
                         "message": self._format_exception_message(
@@ -124,7 +157,7 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
                 return
-            if parsed.path.startswith("/.upload/"):
+            if request_path.startswith("/.upload/"):
                 self._send_json(
                     {
                         "message": self._format_exception_message(
@@ -141,14 +174,29 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
             )
 
     def do_HEAD(self) -> None:
+        parsed = urlsplit(self.path)
+        matched, request_path, needs_slash_redirect = self._strip_public_base_path(parsed.path)
+        if not matched:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+        if needs_slash_redirect:
+            self._send_relative_redirect(parsed.path, parsed.query)
+            return
         try:
-            self._serve_path(head_only=True)
+            self._serve_path(request_path, parsed.query, head_only=True)
         except Exception:
             self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
             self.end_headers()
 
     def do_POST(self) -> None:
         parsed = urlsplit(self.path)
+        matched, request_path, needs_slash_redirect = self._strip_public_base_path(parsed.path)
+        if not matched:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+        if needs_slash_redirect:
+            self._send_relative_redirect(parsed.path, parsed.query)
+            return
         try:
             if not getattr(self.server, "enable_upload", False):
                 self._send_json(
@@ -157,16 +205,16 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            if parsed.path in ("/.upload/check", "/.upload/check/"):
+            if request_path in ("/.upload/check", "/.upload/check/"):
                 self._handle_upload_check()
                 return
-            if parsed.path in ("/.upload/init", "/.upload/init/"):
+            if request_path in ("/.upload/init", "/.upload/init/"):
                 self._handle_upload_init()
                 return
-            if parsed.path in ("/.upload/chunk", "/.upload/chunk/"):
+            if request_path in ("/.upload/chunk", "/.upload/chunk/"):
                 self._handle_upload_chunk(parsed.query)
                 return
-            if parsed.path in ("/.upload/delete", "/.upload/delete/"):
+            if request_path in ("/.upload/delete", "/.upload/delete/"):
                 self._handle_delete_entry()
                 return
 
@@ -183,6 +231,13 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlsplit(self.path)
+        matched, request_path, needs_slash_redirect = self._strip_public_base_path(parsed.path)
+        if not matched:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+        if needs_slash_redirect:
+            self._send_relative_redirect(parsed.path, parsed.query)
+            return
         try:
             if not getattr(self.server, "enable_upload", False):
                 self._send_json(
@@ -190,7 +245,7 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.FORBIDDEN,
                 )
                 return
-            if parsed.path in ("/.upload/delete", "/.upload/delete/"):
+            if request_path in ("/.upload/delete", "/.upload/delete/"):
                 self._handle_delete_entry()
                 return
             self._send_json({"message": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
@@ -204,10 +259,47 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
-    def _serve_path(self, head_only: bool) -> None:
-        parsed = urlsplit(self.path)
-        request_path = parsed.path or "/"
-        force_download = self._parse_download_query(parsed.query)
+    def _strip_public_base_path(self, raw_path: str) -> Tuple[bool, str, bool]:
+        base_path = getattr(self.server, "public_base_path", "")
+        request_path = raw_path or "/"
+        if not request_path.startswith("/"):
+            request_path = "/" + request_path
+
+        if not base_path:
+            return True, request_path, False
+
+        if request_path == base_path:
+            return True, "/", True
+
+        prefix = base_path + "/"
+        if request_path.startswith(prefix):
+            return True, request_path[len(base_path):] or "/", False
+
+        return False, request_path, False
+
+    @staticmethod
+    def _relative_directory_redirect(request_path: str, query: str) -> str:
+        path = request_path or "/"
+        segments = [part for part in path.split("/") if part]
+        last_segment = segments[-1] if segments else "."
+        redirect_target = last_segment + "/"
+        if query:
+            redirect_target += "?" + query
+        return redirect_target
+
+    def _send_relative_redirect(self, request_path: str, query: str) -> None:
+        self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+        self.send_header("Location", self._relative_directory_redirect(request_path, query))
+        self.end_headers()
+
+    def _serve_path(
+        self,
+        request_path: str,
+        query: str,
+        head_only: bool,
+    ) -> None:
+        request_path = request_path or "/"
+        force_download = self._parse_download_query(query)
 
         try:
             local_path = self._resolve_url_path(request_path)
@@ -217,12 +309,7 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
 
         if local_path.is_dir():
             if not request_path.endswith("/"):
-                redirect_target = request_path + "/"
-                if parsed.query:
-                    redirect_target += "?" + parsed.query
-                self.send_response(HTTPStatus.MOVED_PERMANENTLY)
-                self.send_header("Location", redirect_target)
-                self.end_headers()
+                self._send_relative_redirect(request_path, query)
                 return
 
             if getattr(self.server, "serve_index_html", False):
@@ -297,9 +384,12 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
-
-
-    def _send_directory_listing(self, local_dir: Path, request_path: str, head_only: bool) -> None:
+    def _send_directory_listing(
+        self,
+        local_dir: Path,
+        request_path: str,
+        head_only: bool,
+    ) -> None:
         # Keep behavior consistent with previous implementation: reject unreadable directories.
         try:
             iterator = local_dir.iterdir()
@@ -313,7 +403,11 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
         if getattr(self.server, "enable_upload", False):
             upload_panel = self._upload_panel_html(request_path)
 
-        page = render_directory_page(title=title, request_path=request_path, upload_panel=upload_panel)
+        page = render_directory_page(
+            title=title,
+            request_path=request_path,
+            upload_panel=upload_panel,
+        )
         payload = page.encode("utf-8", "surrogateescape")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -471,7 +565,10 @@ class WebFSRequestHandler(BaseHTTPRequestHandler):
 
     def _upload_panel_html(self, request_path: str) -> str:
         chunk_size = int(getattr(self.server, "default_chunk_size", DEFAULT_CHUNK_SIZE))
-        return render_upload_panel(request_path=request_path, chunk_size=chunk_size)
+        return render_upload_panel(
+            request_path=request_path,
+            chunk_size=chunk_size,
+        )
 
     def _handle_upload_status(self, query: str) -> None:
         params = parse_qs(query)
@@ -1104,7 +1201,12 @@ def serve(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     show_hidden: bool = False,
     serve_index_html: bool = False,
+    public_base_path: str = "",
+    url_base_path: str = "",
 ) -> None:
+    if url_base_path and not public_base_path:
+        public_base_path = url_base_path
+
     server = WebFSServer(
         (bind, port),
         WebFSRequestHandler,
@@ -1113,15 +1215,19 @@ def serve(
         default_chunk_size=chunk_size,
         show_hidden=show_hidden,
         serve_index_html=serve_index_html,
+        public_base_path=public_base_path,
     )
 
     host, actual_port = server.server_address[:2]
     root = server.base_path
+    public_base_path = server.public_base_path
     print("Serving HTTP on %s port %s (root: %s)" % (host, actual_port, root))
     print("Available URLs:")
     for url in _build_startup_urls(bind, int(actual_port)):
         print("  - %s" % url)
     print("List API enabled: /.api/list")
+    if public_base_path:
+        print("Public base path: %s" % public_base_path)
     if show_hidden:
         print("Hidden files: visible")
     else:

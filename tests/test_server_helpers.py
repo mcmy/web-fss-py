@@ -9,6 +9,8 @@ from web_fss.server import (  # noqa: E402
     _add_range,
     _count_covered_bytes,
     _normalize_ranges,
+    _normalize_public_base_path,
+    _normalize_url_base_path,
     _parse_single_range_header,
     _range_is_covered,
 )
@@ -45,6 +47,20 @@ class UploadRangeTests(unittest.TestCase):
         ranges = [[0, 10], [20, 30]]
         self.assertTrue(_range_is_covered(ranges, 2, 8))
         self.assertFalse(_range_is_covered(ranges, 8, 22))
+
+
+class UrlBasePathTests(unittest.TestCase):
+    def test_normalize_url_base_path(self) -> None:
+        self.assertEqual(_normalize_url_base_path(""), "")
+        self.assertEqual(_normalize_url_base_path("/"), "")
+        self.assertEqual(_normalize_url_base_path("files/"), "/files")
+        self.assertEqual(_normalize_url_base_path("/files/"), "/files")
+        self.assertEqual(_normalize_url_base_path("https://example.test/files/"), "/files")
+        self.assertEqual(_normalize_public_base_path("/files/nested/"), "/files/nested")
+
+    def test_normalize_url_base_path_rejects_dot_segments(self) -> None:
+        with self.assertRaises(ValueError):
+            _normalize_public_base_path("/files/../admin")
 
 
 if __name__ == "__main__":

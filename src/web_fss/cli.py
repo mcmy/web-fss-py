@@ -55,6 +55,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Auto-serve index.html/index.htm for directory requests",
     )
     parser.add_argument(
+        "--base-path",
+        dest="base_path",
+        default="",
+        help=(
+            "Public URL path prefix when served behind a reverse proxy, "
+            "for example /files"
+        ),
+    )
+    parser.add_argument(
+        "--url-base",
+        dest="base_path",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version="%(prog)s " + __version__,
@@ -80,5 +94,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         chunk_size=args.chunk_size,
         show_hidden=args.show_hidden,
         serve_index_html=args.serve_index_html,
+        public_base_path=args.base_path,
     )
     return 0

@@ -242,6 +242,77 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(body, content)
 
+    def test_public_base_path_supports_prefixed_api_and_file_paths(self) -> None:
+        self.server.public_base_path = "/files"
+        base = Path(self.temp_dir.name)
+        (base / "hello.txt").write_text("hello", encoding="utf-8")
+
+        status_code, payload = self._get_json("/files/.api/list?directory=/")
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["path"], "/")
+        self.assertIn("hello.txt", [item["name"] for item in payload["entries"]])
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/files/hello.txt")
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(body, b"hello")
+
+    def test_public_base_path_rejects_unmatched_prefix(self) -> None:
+        self.server.public_base_path = "/files"
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/other/.api/list?directory=/")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+
+        self.assertEqual(resp.status, 404)
+
+    def test_public_base_path_redirects_relative_paths(self) -> None:
+        self.server.public_base_path = "/files"
+        base = Path(self.temp_dir.name)
+        (base / "folder").mkdir()
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/files")
+        resp = conn.getresponse()
+        resp.read()
+        location = resp.getheader("Location")
+        conn.close()
+
+        self.assertEqual(resp.status, 301)
+        self.assertEqual(location, "files/")
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/files/folder")
+        resp = conn.getresponse()
+        resp.read()
+        location = resp.getheader("Location")
+        conn.close()
+
+        self.assertEqual(resp.status, 301)
+        self.assertEqual(location, "folder/")
+
+    def test_directory_page_scripts_build_api_urls_from_browser_path(self) -> None:
+        self.server.public_base_path = "/files"
+
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        conn.request("GET", "/files/")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        conn.close()
+
+        self.assertEqual(resp.status, 200)
+        self.assertIn("function getApiBasePath()", body)
+        self.assertIn("apiUrl('/.api/list?", body)
+        self.assertIn("apiUrl('/.upload/check')", body)
+        self.assertNotIn("fetch('/.api/list?", body)
+        self.assertNotIn("postJson('/.upload/", body)
+
     def test_upload_check_returns_rename_suggestion_for_plain_name(self) -> None:
         base = Path(self.temp_dir.name)
         (base / "movie.mp4").write_text("x", encoding="utf-8")

@@ -15,6 +15,7 @@
 - File and folder delete button in UI
 - Open mode switch in UI: `Preview` (browser MIME rendering) / `Download`
 - `--serve-index-html` to auto-serve `index.html`/`index.htm` on directory request
+- Reverse proxy sub-path support via `--base-path`
 
 Python compatibility: `3.7` to `3.13` (and newer 3.x).
 
@@ -84,6 +85,14 @@ Auto-serve `index.html`/`index.htm` for directory requests:
 web-fss --serve-index-html
 ```
 
+Serve behind a reverse proxy path prefix:
+
+```bash
+web-fss -b 127.0.0.1 --base-path /files
+```
+
+Use `--base-path` when the proxy forwards requests with the prefix still present, such as `/files/.api/list` and `/files/example.zip`. If the proxy strips `/files` before forwarding to `web-fss`, no extra option is required; the Web UI builds API URLs from the current browser path.
+
 ## Resumable Upload
 
 When uploading `a.zip`, server creates:
@@ -113,6 +122,8 @@ When uploading same filename again:
 - `POST /.upload/chunk`
 - `POST /.upload/delete`
 - `DELETE /.upload/delete`
+
+When `--base-path /files` is used, these endpoints are available under `/files`, for example `GET /files/.api/list?directory=/path/`.
 
 ## License
 
